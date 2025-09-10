@@ -44,9 +44,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-
       - name: Set parameters
         id: set-parameters
         shell: bash
@@ -77,12 +74,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libnuma-dev numactl
-
       - name: Checkout SGLang repository
         uses: actions/checkout@v4
         with:
@@ -97,9 +88,6 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
 
       - name: Check if the device is supported
         shell: bash
@@ -126,8 +114,6 @@ jobs:
 
           if [[ "${DEVICE_NAME}" == "cuda" ]]; then
             DEVICE_TYPE=$(nvidia-smi -i 0 --query-gpu=name --format=csv,noheader | awk '{print $2}')
-            CUDA_HOME="/usr/local/cuda"
-            echo "CUDA_HOME=$CUDA_HOME" >> $GITHUB_ENV
           elif [[ "${DEVICE_NAME}" == "rocm" ]]; then
             DEVICE_TYPE=$(rocminfo | grep "Marketing Name" | tail -n1 | awk -F':' '{print $2}' | xargs)
           elif [[ "${DEVICE_NAME}" == "cpu" ]]; then
@@ -157,35 +143,6 @@ jobs:
         if: env.DEVICE_NAME == 'rocm'
         uses: pytorch/pytorch/./.github/actions/setup-rocm@main
 
-      - name: Authenticate with AWS
-        # Only need for DGX hosts
-        if: contains(env.DEVICE_TYPE, 'B200')
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: arn:aws:iam::308535385114:role/public_ecr_read_only
-          role-duration-seconds: 18000
-          aws-region: us-east-1
-
-      - name: Login to public.ecr.aws
-        # Only need for DGX hosts
-        if: contains(env.DEVICE_TYPE, 'B200')
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
-        with:
-          registry-type: public
-
-      - name: Install SGLang
-        working-directory: sglang-benchmarks
-        shell: bash
-        run: |
-          set -eux
-          uv venv sgl_server_env
-
-          # Install SGLang from source
-          uv pip install -p sgl_server_env -e "$(pwd)/sglang/python[all]" boto3 psutil gitpython
-
-          # Verify installations
-          echo "$(pwd)/sgl_server_env/bin" >> $GITHUB_PATH
-
       - name: Setup benchmark tests
         env:
           MODELS: ${{ matrix.models }}
@@ -206,14 +163,30 @@ jobs:
           ls -lah sglang-benchmarks/benchmarks/tests || echo "No test files found"
           find sglang-benchmarks/benchmarks/tests -type f -exec cat {} \; || echo "No test files to display"
 
+      - name: Set Docker image
+        run: |
+          echo "DOCKER_IMAGE=vllm/vllm-openai:latest" >> $GITHUB_ENV
+
       - name: Run SGLang benchmark
-        working-directory: sglang-benchmarks/benchmarks
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           SAVE_TO_PYTORCH_BENCHMARK_FORMAT: 1
         run: |
           set -eux
-          bash ../../.github/scripts/run-sglang-performance-benchmarks.sh
+          container_name=$(docker run \
+            ${GPU_FLAG:-} \
+            --ipc=host \
+            --tty \
+            --detach \
+            --shm-size=4g \
+            -e HF_TOKEN \
+            -e DEVICE_NAME \
+            -e DEVICE_TYPE \
+            -e SAVE_TO_PYTORCH_BENCHMARK_FORMAT \
+            -v "${GITHUB_WORKSPACE}:/tmp/workspace" \
+            -w /tmp/workspace \
+            "${DOCKER_IMAGE}")
+          docker exec -t "${container_name}" bash -c "pip install -e sglang-benchmarks/sglang/python[all] boto3 psutil gitpython && cd sglang-benchmarks/benchmarks && bash ../../.github/scripts/run-sglang-performance-benchmarks.sh"
 
       - name: Upload the benchmark results
         if: always()

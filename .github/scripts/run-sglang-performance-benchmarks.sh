@@ -221,13 +221,8 @@ run_serving_tests() {
       continue
     fi
 
-    # Create a new uv environment for vllm client (once per test case)
-    echo "Creating new uv environment for vllm client..."
-    uv venv vllm_client_env
-
-    # Activate the environment and install vllm
-    echo "Installing vllm in the new environment..."
-    source vllm_client_env/bin/activate
+    # Install vllm in the current environment
+    echo "Installing vllm..."
     pip install vllm
 
     # iterate over different QPS
@@ -278,10 +273,6 @@ run_serving_tests() {
         }')
       echo "$jq_output" >"$RESULTS_FOLDER/${new_test_name}.commands"
     done
-
-    # Deactivate and clean up the environment after all QPS tests
-    deactivate
-    rm -rf vllm_client_env
 
     # clean up
     kill -9 $server_pid
